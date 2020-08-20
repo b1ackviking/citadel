@@ -1,4 +1,10 @@
+#define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <array>
+#include <cstdlib>
+#include <ctime>
+#include <cwchar>
+#include <stdexcept>
 
 #ifndef NDEBUG
 #include <crtdbg.h>
@@ -17,65 +23,119 @@ int main()
 }
 #endif // !NDEBUG
 
-LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+class App
 {
-  switch (message)
+private:
+  HINSTANCE m_hInstance;
+  HWND m_hWnd;
+  ATOM m_WindowClass;
+
+  // NOTE: clang-format doesn't recognize attributes [[likely]/[[unlikely]]
+  // clang-format off
+  static LRESULT CALLBACK m_fnStaticWndProc(HWND hWnd, UINT message,
+                                            WPARAM wParam, LPARAM lParam)
   {
-  case WM_CLOSE:
-  case WM_DESTROY: PostQuitMessage(0); return 0;
-  default: return DefWindowProcW(hWnd, message, wParam, lParam);
-  }
-}
-
-int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR,
-                    _In_ int nCmdShow)
-{
-  constexpr auto Title  = L"Citadel";
-  constexpr auto Width  = 800;
-  constexpr auto Height = 600;
-
-  WNDCLASSW wc{};
-  wc.lpfnWndProc   = WndProc;
-  wc.hInstance     = hInstance;
-  wc.hIcon         = LoadIconW(nullptr, IDI_APPLICATION);
-  wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
-  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-  wc.lpszClassName = Title;
-
-  if (!RegisterClassW(&wc))
-    return -1;
-
-  RECT windowRect{ .left = 0, .top = 0, .right = Width, .bottom = Height };
-  AdjustWindowRect(&windowRect, WS_OVERLAPPEDWINDOW, FALSE);
-  int w = windowRect.right - windowRect.left;
-  int h = windowRect.bottom - windowRect.top;
-
-  HWND hWnd = CreateWindowExW(0, Title, Title, WS_OVERLAPPEDWINDOW,
-                              (GetSystemMetrics(SM_CXSCREEN) - w) / 2,
-                              (GetSystemMetrics(SM_CYSCREEN) - h) / 2, w, h,
-                              nullptr, nullptr, hInstance, nullptr);
-
-  if (!hWnd)
-    return -2;
-
-  ShowWindow(hWnd, nCmdShow);
-  UpdateWindow(hWnd);
-
-  MSG msg{};
-  bool running = true;
-  while (running)
-  {
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+    if (message == WM_CREATE) [[unlikely]]
     {
-      if (msg.message == WM_QUIT)
-        running = false;
-
-      TranslateMessage(&msg);
-      DispatchMessageW(&msg);
+      auto cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+      SetWindowLongPtrW(hWnd, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    }
+    else [[likely]]
+    {
+      App* app = reinterpret_cast<App*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+      if (app)
+        return app->m_fnWndProc(hWnd, message, wParam, lParam);
     }
 
-    Sleep(15);
+    return DefWindowProcW(hWnd, message, wParam, lParam);
+  }
+  // clang-format on
+
+  LRESULT m_fnWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+  {
+    switch (message)
+    {
+    case WM_CLOSE:
+    case WM_DESTROY: PostQuitMessage(0); return 0;
+    default: return DefWindowProcW(hWnd, message, wParam, lParam);
+    }
   }
 
-  return static_cast<int>(msg.wParam);
+public:
+  App(const App&) = delete;
+  App& operator=(const App&) = delete;
+
+  App(const wchar_t* Title = L"Citadel", int Width = 800, int Height = 600)
+  {
+    m_hInstance = GetModuleHandleW(nullptr);
+
+    std::array<wchar_t, 30> windowClassName{};
+    std::swprintf(windowClassName.data(), windowClassName.size(), L"Citadel_%u",
+                  std::rand());
+
+    WNDCLASSW wc{};
+    wc.lpfnWndProc   = m_fnStaticWndProc;
+    wc.hInstance     = m_hInstance;
+    wc.hIcon         = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.lpszClassName = windowClassName.data();
+
+    if (m_WindowClass = RegisterClassW(&wc); !m_WindowClass)
+      throw std::runtime_error{ "Failed to register a window class\n" };
+
+    RECT windowRect{ .left = 0, .top = 0, .right = Width, .bottom = Height };
+    AdjustWindowRect(&windowRect, WS_OVERLAPPEDWINDOW, FALSE);
+    int w = windowRect.right - windowRect.left;
+    int h = windowRect.bottom - windowRect.top;
+
+    m_hWnd = CreateWindowExW(0, reinterpret_cast<LPCWSTR>(m_WindowClass), Title,
+                             WS_OVERLAPPEDWINDOW,
+                             (GetSystemMetrics(SM_CXSCREEN) - w) / 2,
+                             (GetSystemMetrics(SM_CYSCREEN) - h) / 2, w, h,
+                             nullptr, nullptr, m_hInstance, this);
+
+    if (!m_hWnd)
+      throw std::runtime_error{ "Failed to create a window\n" };
+
+    ShowWindow(m_hWnd, SW_SHOW);
+    UpdateWindow(m_hWnd);
+  }
+
+  ~App()
+  {
+    DestroyWindow(m_hWnd);
+    UnregisterClassW(reinterpret_cast<LPCWSTR>(m_WindowClass), m_hInstance);
+  }
+
+  int Run()
+  {
+    MSG msg{};
+    bool running = true;
+    while (running)
+    {
+      while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+      {
+        if (msg.message == WM_QUIT)
+          running = false;
+
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
+
+      Sleep(15);
+    }
+
+    return static_cast<int>(msg.wParam);
+  }
+};
+
+int WINAPI wWinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPWSTR, _In_ int)
+{
+  std::srand(static_cast<unsigned int>(std::time(nullptr)));
+
+  App app{ L"Citadel", 1280, 720 };
+
+  return app.Run();
 }
